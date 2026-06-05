@@ -4,10 +4,11 @@ import { requireAdmin } from "@/lib/authz";
 import { User } from "@/lib/models";
 import { connectToDatabase } from "@/lib/mongodb";
 import { TENANT_USER_LIMITS } from "@/lib/user-admin";
+import { roles } from "@/server/permissions/roles";
 
 const schema = z.object({
   isActive: z.boolean().optional(),
-  role: z.enum(["admin", "agent"]).optional()
+  role: z.enum(roles).refine((role) => role !== "owner", "Owner users cannot be assigned here.").optional()
 });
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -18,9 +19,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     await connectToDatabase();
 
     const target = await User.findOne({ _id: id, tenantId: session.user.tenantId });
-    if (!target) return NextResponse.json({ error: "المستخدم غير موجود." }, { status: 404 });
+    if (!target) {
+      return NextResponse.json({ error: "User was not found." }, { status: 404 });
+    }
+
     if (target.role === "owner") {
-      return NextResponse.json({ error: "لا يمكن تعديل المشترك الرئيسي من هذه الصفحة." }, { status: 403 });
+      return NextResponse.json({ error: "Owner users cannot be modified here." }, { status: 403 });
     }
 
     if (body.role && body.role !== target.role) {
@@ -28,12 +32,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         tenantId: session.user.tenantId,
         role: body.role
       });
-      const limit = body.role === "admin" ? TENANT_USER_LIMITS.admin : TENANT_USER_LIMITS.agent;
+      const limit = TENANT_USER_LIMITS[body.role];
       if (count >= limit) {
-        return NextResponse.json(
-          { error: body.role === "admin" ? "تم الوصول إلى حد 2 مدير." : "تم الوصول إلى حد 2 موظف." },
-          { status: 403 }
-        );
+        return NextResponse.json({ error: "User limit reached for this role." }, { status: 403 });
       }
       target.role = body.role;
     }
@@ -45,7 +46,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     await target.save();
     return NextResponse.json({ ok: true });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "تعذر تحديث المستخدم.";
+    const message = error instanceof Error ? error.message : "Unable to update user.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { Types } from "mongoose";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { Bot, Tenant, User, BillingPlan, TenantSubscription } from "@/lib/models";
@@ -6,8 +7,8 @@ import { connectToDatabase } from "@/lib/mongodb";
 import { slugifyArabic } from "@/lib/strings";
 
 const registerSchema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
+  name: z.string().min(2).max(120),
+  email: z.string().email().max(180),
   password: z.string().min(8),
   tenantName: z.string().min(2)
 });
@@ -18,36 +19,35 @@ export async function POST(request: Request) {
     await connectToDatabase();
 
     const email = body.email.toLowerCase().trim();
-    const exists = await User.exists({ email });
-    if (exists) {
-      return NextResponse.json({ error: "البريد الإلكتروني مستخدم بالفعل." }, { status: 409 });
-    }
-
+    const userId = new Types.ObjectId();
+    const tenantId = new Types.ObjectId();
     const password = await bcrypt.hash(body.password, 12);
-    const user = await User.create({
-      name: body.name,
-      email,
-      password,
-      role: "owner"
-    });
+    const baseSlug = slugifyArabic(body.tenantName) || `tenant-${userId.toString().slice(-6)}`;
 
-    const baseSlug = slugifyArabic(body.tenantName) || `tenant-${user._id.toString().slice(-6)}`;
     const tenant = await Tenant.create({
+      _id: tenantId,
       name: body.tenantName,
-      slug: `${baseSlug}-${user._id.toString().slice(-5)}`,
-      ownerId: user._id,
+      slug: `${baseSlug}-${userId.toString().slice(-5)}`,
+      ownerId: userId,
       plan: "free",
       isActive: true
     });
 
-    user.tenantId = tenant._id;
-    user.ownerId = user._id;
-    await user.save();
+    const user = await User.create({
+      _id: userId,
+      name: body.name,
+      email,
+      password,
+      role: "owner",
+      tenantId: tenant._id,
+      ownerId: userId,
+      isActive: true
+    });
 
     const bot = await Bot.create({
       tenantId: tenant._id,
-      name: "بوت ChatZi",
-      description: "البوت الافتراضي لمحادثات العملاء. يمكنك تغذيته من صفحة قاعدة المعرفة.",
+      name: "ChatZi Bot",
+      description: "Default customer conversations bot. You can train it from the knowledge base page.",
       isActive: true
     });
 
@@ -63,9 +63,9 @@ export async function POST(request: Request) {
       });
     }
 
-    return NextResponse.json({ ok: true, botId: bot._id.toString() });
+    return NextResponse.json({ ok: true, userId: user._id.toString(), botId: bot._id.toString() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "تعذر إنشاء الحساب.";
+    const message = error instanceof Error ? error.message : "Unable to create account.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

@@ -5,12 +5,13 @@ import { requireAdmin } from "@/lib/authz";
 import { Tenant, User } from "@/lib/models";
 import { connectToDatabase } from "@/lib/mongodb";
 import { TENANT_USER_LIMITS } from "@/lib/user-admin";
+import { roles } from "@/server/permissions/roles";
 
 const schema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
+  name: z.string().min(2).max(120),
+  email: z.string().email().max(180),
   password: z.string().min(8),
-  role: z.enum(["admin", "agent"])
+  role: z.enum(roles).refine((role) => role !== "owner", "Owner users cannot be created here.")
 });
 
 export async function POST(request: Request) {
@@ -20,25 +21,24 @@ export async function POST(request: Request) {
     await connectToDatabase();
 
     const email = body.email.toLowerCase().trim();
-    const exists = await User.exists({ email });
+    const tenant = await Tenant.findOne({ _id: session.user.tenantId, isActive: true });
+    if (!tenant) {
+      return NextResponse.json({ error: "Tenant was not found or is inactive." }, { status: 404 });
+    }
+
+    const exists = await User.exists({ tenantId: tenant._id, email });
     if (exists) {
-      return NextResponse.json({ error: "البريد الإلكتروني مستخدم بالفعل." }, { status: 409 });
+      return NextResponse.json({ error: "Email is already used in this tenant." }, { status: 409 });
     }
 
     const count = await User.countDocuments({
-      tenantId: session.user.tenantId,
+      tenantId: tenant._id,
       role: body.role
     });
-    const limit = body.role === "admin" ? TENANT_USER_LIMITS.admin : TENANT_USER_LIMITS.agent;
+    const limit = TENANT_USER_LIMITS[body.role];
     if (count >= limit) {
-      return NextResponse.json(
-        { error: body.role === "admin" ? "تم الوصول إلى حد 2 مدير." : "تم الوصول إلى حد 2 موظف." },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: "User limit reached for this role." }, { status: 403 });
     }
-
-    const tenant = await Tenant.findOne({ _id: session.user.tenantId, isActive: true });
-    if (!tenant) return NextResponse.json({ error: "المستأجر غير موجود أو غير مفعل." }, { status: 404 });
 
     const user = await User.create({
       name: body.name,
@@ -52,7 +52,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ id: user._id.toString() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "تعذر إضافة المستخدم.";
+    const message = error instanceof Error ? error.message : "Unable to add user.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

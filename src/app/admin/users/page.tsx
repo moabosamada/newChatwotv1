@@ -10,8 +10,8 @@ export default async function AdminUsersPage() {
   return (
     <>
       <PageHeader
-        title="إدارة المستخدمين"
-        description="كل مشترك يمكنه إضافة 2 مدير و2 موظف يدخلون نفس بروفايل الشركة مع تخزين ownerId للمشترك الرئيسي."
+        title="User management"
+        description="Manage tenant users, roles, active status, and role quotas from one place."
       />
       <UsersAdmin users={data.users} usage={data.usage} limits={data.limits} />
     </>

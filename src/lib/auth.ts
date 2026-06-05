@@ -35,12 +35,16 @@ export const authOptions: AuthOptions = {
         const tenant = await Tenant.findOne({ _id: user.tenantId, isActive: true });
         if (!tenant) return null;
 
+        user.lastLoginAt = new Date();
+        await user.save();
+
         return {
           id: user._id.toString(),
           name: user.name,
           email: user.email,
           role: user.role,
-          tenantId: user.tenantId.toString()
+          tenantId: user.tenantId.toString(),
+          isActive: true
         };
       }
     })
@@ -51,6 +55,7 @@ export const authOptions: AuthOptions = {
         token.id = user.id;
         token.role = user.role;
         token.tenantId = user.tenantId;
+        token.isActive = user.isActive;
       }
       return token;
     },
@@ -59,6 +64,7 @@ export const authOptions: AuthOptions = {
         session.user.id = token.id;
         session.user.role = token.role;
         session.user.tenantId = token.tenantId;
+        session.user.isActive = token.isActive;
       }
       return session;
     }

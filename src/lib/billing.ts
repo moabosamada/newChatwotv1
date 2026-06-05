@@ -12,6 +12,17 @@ import { connectToDatabase } from "@/lib/mongodb";
 import { absoluteUrl } from "@/lib/strings";
 import { getStripe } from "@/lib/stripe";
 
+function getSubscriptionPeriodEnd(subscription: Stripe.Subscription) {
+  const itemPeriodEnd = subscription.items.data[0]?.current_period_end;
+  return itemPeriodEnd ? new Date(itemPeriodEnd * 1000) : null;
+}
+
+function getInvoiceSubscriptionId(invoice: Stripe.Invoice) {
+  const subscription = invoice.parent?.subscription_details?.subscription;
+  if (!subscription) return null;
+  return typeof subscription === "string" ? subscription : subscription.id;
+}
+
 export async function getBillingCatalog(tenantId: string) {
   await connectToDatabase();
   const [plans, packs] = await Promise.all([
@@ -271,33 +282,36 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
 async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
   const tenantSubscription = await TenantSubscription.findOne({ stripeSubscriptionId: subscription.id });
   if (!tenantSubscription) return;
+  const currentPeriodEnd = getSubscriptionPeriodEnd(subscription);
 
   await TenantSubscription.updateOne(
     { stripeSubscriptionId: subscription.id },
     {
       $set: {
         status: subscription.status,
-        currentPeriodEnd: new Date(subscription.current_period_end * 1000)
+        ...(currentPeriodEnd ? { currentPeriodEnd } : {})
       }
     }
   );
 }
 
 async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
+  const currentPeriodEnd = getSubscriptionPeriodEnd(subscription);
   await TenantSubscription.updateOne(
     { stripeSubscriptionId: subscription.id },
     {
       $set: {
         status: "canceled",
-        currentPeriodEnd: new Date(subscription.current_period_end * 1000)
+        ...(currentPeriodEnd ? { currentPeriodEnd } : {})
       }
     }
   );
 }
 
 async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
-  if (invoice.billing_reason === "subscription_cycle" && invoice.subscription) {
-    const tenantSubscription = await TenantSubscription.findOne({ stripeSubscriptionId: invoice.subscription as string });
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
+  if (invoice.billing_reason === "subscription_cycle" && subscriptionId) {
+    const tenantSubscription = await TenantSubscription.findOne({ stripeSubscriptionId: subscriptionId });
     if (tenantSubscription) {
       // Reset used messages for the new billing cycle
       await TenantSubscription.updateOne(
@@ -311,9 +325,10 @@ async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
 }
 
 async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
-  if (invoice.subscription) {
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
+  if (subscriptionId) {
     await TenantSubscription.updateOne(
-      { stripeSubscriptionId: invoice.subscription as string },
+      { stripeSubscriptionId: subscriptionId },
       {
         $set: { status: "past_due" }
       }
@@ -358,7 +373,8 @@ export async function syncSubscriptionWithStripe(tenantId: string) {
     const subscription = await stripe.subscriptions.retrieve(tenantSubscription.stripeSubscriptionId);
     
     // Check if period rolled over to reset usage
-    const newPeriodEnd = new Date(subscription.current_period_end * 1000);
+    const newPeriodEnd = getSubscriptionPeriodEnd(subscription);
+    if (!newPeriodEnd) return;
     const isNewCycle = tenantSubscription.currentPeriodEnd 
       && tenantSubscription.currentPeriodEnd < newPeriodEnd 
       && subscription.status === "active";
